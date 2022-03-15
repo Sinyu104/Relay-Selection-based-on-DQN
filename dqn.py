@@ -143,15 +143,13 @@ class DeepQNetwork:
             print('\ntarget_params_replaced\n')
 
         # sample batch memory from all memory
-        # input("In learn")
+        
         if self.memory_counter > self.memory_size:
             sample_index = np.random.choice(self.memory_size, size=self.batch_size, replace=False)
         else:
             sample_index = np.random.choice(self.memory_counter, size=self.batch_size)
         batch_memory = [self.memory[i] for i in sample_index]
-        # print(sample_index)
-        # print(batch_memory)
-        # input("get batch")
+        
 
 
         _, cost = self.sess.run(
@@ -187,7 +185,6 @@ def run_maze():
         # initial observation
         # 初始化环境，相当于每回合重新开始
         observation = env.reset()
-        print("ob: ", observation)
         while True:
             # fresh env
             # 刷新环境
