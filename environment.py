@@ -3,6 +3,7 @@ import numpy as np
 import time
 import math
 import itertools
+import queue
 import sys
 
 if sys.version_info.major == 2:
@@ -10,8 +11,9 @@ if sys.version_info.major == 2:
 else:
     import tkinter as tk
 
-eng_ratio = 5
+eng_ratio = 200
 eg_eff = 0.5 
+dis = 10
 snr_th=3
 gamma=0.5
 
@@ -39,14 +41,16 @@ class twohop_relay(tk.Tk, object):
         self.ini_data = 1
         self.ini_eng = 1
         self.n_features = 4
+        self.age = [queue.Queue(), queue.Queue(), queue.Queue()]
         self._build_system()
 
     def _build_system(self):
         self.data = list(itertools.repeat(self.ini_data, self.rly_num))
         self.eng = list(itertools.repeat(self.ini_eng, self.rly_num))
-        self.random_channel =  NormalizeData(np.array([give_channel() for _ in range(10)]))
-        self.h = [choose_channel(self.random_channel) for _ in range(self.rly_num)]
-        self.g = [choose_channel(self.random_channel) for _ in range(self.rly_num)]
+        self.random_channel =  np.array([give_channel() for _ in range(10)])
+        self.maxchannel = np.max(self.random_channel)
+        self.h = [choose_channel(NormalizeData(self.random_channel)) for _ in range(self.rly_num)]
+        self.g = [choose_channel(NormalizeData(self.random_channel)) for _ in range(self.rly_num)]
         
 
     
@@ -56,40 +60,104 @@ class twohop_relay(tk.Tk, object):
         self.eng = list(itertools.repeat(self.ini_eng, self.rly_num))
         self.h = [choose_channel(self.random_channel) for _ in range(self.rly_num)]
         self.g = [choose_channel(self.random_channel) for _ in range(self.rly_num)]
+        for i in range(self.rly_num):
+            while not self.age[i].empty():
+                self.age[i].get()
+            self.age[i].put(0)
         return [self.h,self.g, self.data, self.eng]
 
     def step(self, action):
         cur_state = [self.h,self.g, self.data, self.eng]
+        print("current state ", cur_state)
         recep = int(action/self.rly_num)
         trans = action%self.rly_num
-        if self.data[recep]>=self.data_size-1 or self.eng[trans]==0 or self.data[trans]==0: # It's invalid state
-            reward = -1
-            next_state = cur_state
 
-        elif all(flag == 0 for flag in self.eng):   # It's EES state
-            reward = -1
+
+        if all(flag == 0 for flag in self.eng):   # It's EES state
             for r in range(0,self.rly_num):  # transmit data to the reception reley, while the others charging
-                self.eng[r]+=min(math.floor(self.h[r]*0.4*eg_eff*eng_ratio),self.eng_size)
-            next_state = cur_state
+                self.eng[r] = self.eng[r]+ min(math.floor(self.h[r]*self.maxchannel*eg_eff*eng_ratio*pow(dis, -2)),self.eng_size)
+            print("It's EES.")
+            reward=0
+            for a in self.age:
+                for _ in range(a.qsize()):
+                    temp = a.get()+1
+                    a.put(temp)
+                    reward+=temp
+            reward = reward / sum(self.data)
+            reward = 1/reward
+            self.render()
+            next_state = [self.h,self.g, self.data, self.eng]
+
+        elif (recep==trans) and (self.eng[trans]==0 ): # It's invalid state
+            print("It's Invalid.")
+            reward=0
+            for a in self.age:
+                for _ in range(a.qsize()):
+                    temp = a.get()+1
+                    a.put(temp)
+                    reward+=temp
+            reward = reward / sum(self.data)
+            reward = 1/reward
+            self.render()
+            next_state = [self.h,self.g, self.data, self.eng]
+        
+        elif (recep!=trans) and (self.data[recep]>=self.data_size-1 or self.eng[trans]==0 or self.data[trans]==0) :
+            print("It's Invalid.")
+            reward=0
+            for a in self.age:
+                for _ in range(a.qsize()):
+                    temp = a.get()+1
+                    a.put(temp)
+                    reward+=temp
+            reward = reward / sum(self.data)
+            reward = 1/reward
+            self.render()
+            next_state = [self.h,self.g, self.data, self.eng]
+
+            
         else:
             self.data[recep]+=1  # move agent
             self.data[trans]-=1
             for r in range(0,self.rly_num):  # transmit data to the reception reley, while the others charging
                 if r != recep:
-                    self.eng[r]=min(math.floor(self.eng[r]+self.h[r]*0.4*eg_eff*eng_ratio),self.eng_size)
+                    self.eng[r]=min(math.floor(self.eng[r]+self.h[r]*self.maxchannel*eg_eff*eng_ratio*pow(dis, -2)),self.eng_size)
             self.eng[trans]-=1
             self.render()
+            print("It's normal")
+            print("Recep ", recep, " Trans ", trans)
 
             # reward function
-
-            reward = 5*0.2*(self.h[recep]*0.4+1)*0.2*(self.g[trans]*0.4+1)/(5*0.2*(self.h[recep]*0.4+1)+0.2*(self.g[trans]*0.4+1)+1)
-            reward = 0.5*math.log2(1+reward)
+            if recep != trans:
+                reward=0
+                self.age[trans].get()
+                for a in self.age:
+                    for _ in range(a.qsize()):
+                        temp = a.get()+1
+                        a.put(temp)
+                        reward+=temp
+                reward = reward / (sum(self.data)-1)
+                reward = 1/reward
+                self.age[recep].put(0)
+            else:
+                reward=0
+                for a in self.age:
+                    for _ in range(a.qsize()):
+                        temp = a.get()
+                        a.put(temp)
+                        reward+=temp
+                reward = reward / (sum(self.data))
+                if reward == 0:
+                    reward=1
+                reward = 1/reward
             next_state = [self.h,self.g, self.data, self.eng]
-        
-        
+        print("next state ",next_state)
+        for i in range(self.rly_num):
+            print("The reward queue is ", self.age[i].queue)
+        print("The reward is ", reward)
+        # input("Check Reward!")
         return next_state, reward
 
     def render(self):
         # time.sleep(0.01)
-        self.h = [choose_channel(self.random_channel) for _ in range(self.rly_num)]
-        self.g = [choose_channel(self.random_channel) for _ in range(self.rly_num)]
+        self.h = [choose_channel(NormalizeData(self.random_channel)) for _ in range(self.rly_num)]
+        self.g = [choose_channel(NormalizeData(self.random_channel)) for _ in range(self.rly_num)]
