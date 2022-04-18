@@ -47,7 +47,7 @@ class twohop_relay(tk.Tk, object):
     def _build_system(self):
         self.data = list(itertools.repeat(self.ini_data, self.rly_num))
         self.eng = list(itertools.repeat(self.ini_eng, self.rly_num))
-        self.random_channel =  np.array([give_channel() for _ in range(10)])
+        self.random_channel =  np.array([give_channel() for _ in range(100)])
         self.maxchannel = np.max(self.random_channel)
         self.h = [choose_channel(NormalizeData(self.random_channel)) for _ in range(self.rly_num)]
         self.g = [choose_channel(NormalizeData(self.random_channel)) for _ in range(self.rly_num)]
@@ -70,48 +70,55 @@ class twohop_relay(tk.Tk, object):
         cur_state = [self.h,self.g, self.data, self.eng]
         print("current state ", cur_state)
         recep = int(action/self.rly_num)
-        trans = action%self.rly_num
+        trans = int(action%self.rly_num)
 
 
         if all(flag == 0 for flag in self.eng):   # It's EES state
             for r in range(0,self.rly_num):  # transmit data to the reception reley, while the others charging
+                # *pow(dis, -2)
                 self.eng[r] = self.eng[r]+ min(math.floor(self.h[r]*self.maxchannel*eg_eff*eng_ratio*pow(dis, -2)),self.eng_size)
-            print("It's EES.")
+            # print("It's EES.")
             reward=0
             for a in self.age:
                 for _ in range(a.qsize()):
                     temp = a.get()+1
                     a.put(temp)
                     reward+=temp
-            reward = reward / sum(self.data)
-            reward = 1/reward
+            age = reward / sum(self.data)
+            reward = -1/age
             self.render()
+            # for a in self.age:
+            #     print("Age ",a.queue)
             next_state = [self.h,self.g, self.data, self.eng]
 
         elif (recep==trans) and (self.eng[trans]==0 ): # It's invalid state
-            print("It's Invalid.")
+            # print("It's Invalid.")
             reward=0
             for a in self.age:
                 for _ in range(a.qsize()):
                     temp = a.get()+1
                     a.put(temp)
                     reward+=temp
-            reward = reward / sum(self.data)
-            reward = 1/reward
+            age = reward / sum(self.data)
+            reward = -1/age
             self.render()
+            # for a in self.age:
+            #     print("Age ",a.queue)
             next_state = [self.h,self.g, self.data, self.eng]
         
         elif (recep!=trans) and (self.data[recep]>=self.data_size-1 or self.eng[trans]==0 or self.data[trans]==0) :
-            print("It's Invalid.")
+            # print("It's Invalid.")
             reward=0
             for a in self.age:
                 for _ in range(a.qsize()):
                     temp = a.get()+1
                     a.put(temp)
                     reward+=temp
-            reward = reward / sum(self.data)
-            reward = 1/reward
+            age = reward / sum(self.data)
+            reward = -1/age
             self.render()
+            # for a in self.age:
+            #     print("Age ",a.queue)
             next_state = [self.h,self.g, self.data, self.eng]
 
             
@@ -120,11 +127,12 @@ class twohop_relay(tk.Tk, object):
             self.data[trans]-=1
             for r in range(0,self.rly_num):  # transmit data to the reception reley, while the others charging
                 if r != recep:
+                    # *pow(dis, -2)
                     self.eng[r]=min(math.floor(self.eng[r]+self.h[r]*self.maxchannel*eg_eff*eng_ratio*pow(dis, -2)),self.eng_size)
             self.eng[trans]-=1
             self.render()
-            print("It's normal")
-            print("Recep ", recep, " Trans ", trans)
+            # print("It's normal")
+            # print("Recep ", recep, " Trans ", trans)
 
             # reward function
             if recep != trans:
@@ -135,27 +143,38 @@ class twohop_relay(tk.Tk, object):
                         temp = a.get()+1
                         a.put(temp)
                         reward+=temp
-                reward = reward / (sum(self.data)-1)
-                reward = 1/reward
+                age = reward / (sum(self.data)-1)
+                reward = 1/age
                 self.age[recep].put(0)
             else:
                 reward=0
-                for a in self.age:
-                    for _ in range(a.qsize()):
-                        temp = a.get()
-                        a.put(temp)
-                        reward+=temp
-                reward = reward / (sum(self.data))
-                if reward == 0:
-                    reward=1
-                reward = 1/reward
+                if self.age[trans].empty():
+                    for a in self.age:
+                        for _ in range(a.qsize()):
+                            temp = a.get()+1
+                            a.put(temp)
+                            reward+=temp
+                    age = reward / (sum(self.data)-1)
+                else:
+                    self.age[trans].get()
+                    for a in self.age:
+                        for _ in range(a.qsize()):
+                            temp = a.get()+1
+                            a.put(temp)
+                            reward+=temp
+                    age = reward / (sum(self.data)-1)
+                    self.age[recep].put(0)
+                
+                if age == 0:
+                    age=0.1
+                reward = 1/age
+            # print("age = ",age)
+            # for a in self.age:
+            #     print("Age ",a.queue)
             next_state = [self.h,self.g, self.data, self.eng]
-        print("next state ",next_state)
-        for i in range(self.rly_num):
-            print("The reward queue is ", self.age[i].queue)
-        print("The reward is ", reward)
+        # print("next state ", next_state)
         # input("Check Reward!")
-        return next_state, reward
+        return next_state, reward, age
 
     def render(self):
         # time.sleep(0.01)

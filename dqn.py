@@ -28,7 +28,7 @@ class DeepQNetwork:
             # 神经网络学习时一次学习的大小
             batch_size=128,
             # 不断的缩小随机的范围
-            e_greedy_increment=0.05,
+            e_greedy_increment=0.01,
             output_graph=False,
     ):
         self.n_actions = n_actions
@@ -41,7 +41,7 @@ class DeepQNetwork:
         self.memory_size = memory_size
         self.batch_size = batch_size
         self.epsilon_increment = e_greedy_increment
-        self.epsilon = 0.1 if e_greedy_increment is not None else self.epsilon_max
+        self.epsilon = 0.05 if e_greedy_increment is not None else self.epsilon_max
 
         # total learning step
         # 记录学习了多少步
@@ -69,6 +69,8 @@ class DeepQNetwork:
         self.sess.run(tf.global_variables_initializer())
         # 记录下每步的误差
         self.cost_his = []
+        # 紀錄下每步的age
+        self.age_his = []
 
     def _build_net(self):
         self.s = tf.placeholder(tf.float32, [None,4, 3], name='s')  # input State
@@ -143,6 +145,18 @@ class DeepQNetwork:
         print("my action", action)
         return action
 
+    def choose(self, observation):
+        # to have batch dimension when feed into tf placeholder
+        observation = np.reshape(observation, (1,4,3))
+        if np.random.uniform() < self.epsilon:
+            # forward feed the observation and get q value for every actions
+            actions_value = self.sess.run(self.q_eval, feed_dict={self.s: observation})
+            action = np.argmax(actions_value)
+        else:
+            action = np.random.randint(0, self.n_actions)
+        print("my action", action)
+        return action
+
     # 学习
     def learn(self):
         # check to replace target parameters
@@ -192,6 +206,9 @@ class DeepQNetwork:
         plt.ylabel('Cost')
         plt.xlabel('training steps')
         plt.show()
+    
+    def plot_age(self):
+        print("The average age is ", sum(self.age_his)/len(self.age_his))
 
 
 def run_maze():
@@ -216,7 +233,7 @@ def run_maze():
 
             # RL take action and get next observation and reward
             # 环境根据动作，做出反应，主要给出state，reward
-            observation_, reward = env.step(action)
+            observation_, reward, Age= env.step(action)
 
             # DQN存储记忆，即（s,a,r,s）
             RL.store_transition(observation, action, reward, observation_)
@@ -231,11 +248,23 @@ def run_maze():
 
             # break while loop when end of this episode
             # 如果游戏结束，则跳出循环
-            if step>10000:
+            if step>100000:
                 break
             # 学习的次数
             step += 1
 
+
+    # input("Testing")
+    observation = env.reset()
+    for _ in range(pow(10,5)):
+        # input("pause!")
+        env.render()
+
+        action = RL.choose(observation)
+        observation_, reward, Age= env.step(action)
+        print("The age is " , Age)
+        RL.age_his.append(Age)
+        observation = observation_
     # end of game
     print('game over')
     env.destroy()
@@ -253,4 +282,5 @@ if __name__ == '__main__':
                       )
     env.after(100, run_maze)
     env.mainloop()
+    RL.plot_age()
     RL.plot_cost()
