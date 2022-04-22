@@ -6,8 +6,8 @@ A two-hop communication scenario, representing as Figure 1, comprising of K rela
 In our work, each relay maintains two finite buffers, including a data buffer, which can keep at most Dmax data packets, and an energy buffer, whose maximum storage is Emax intervals. An interval in the energy buffer corresponds to the amount of energy consumed to transmit one data packet, which has a fixed length.
 <p align="center">
     <img src="sys_model.jpg" alt="image1" width="400"/>
-    <p style="text-align: center;">Figure 1</p>
 </p>
+<p style="text-align: center;">Figure 1</p>
 
 ## 2. How to run the code?
 ```
