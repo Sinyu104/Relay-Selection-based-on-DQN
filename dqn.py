@@ -1,11 +1,14 @@
 # -*- coding: UTF-8 -*-
 import os
+
+from sqlalchemy import false, true
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import environment as Env
 import tensorflow.compat.v1 as tf
 from tensorflow.keras import layers, models
 tf.disable_v2_behavior()
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 class DeepQNetwork:
@@ -71,6 +74,10 @@ class DeepQNetwork:
         self.cost_his = []
         # 紀錄下每步的age
         self.age_his = []
+        # 紀錄下每個distence的平均age
+        self.age_total_his = []
+        # 紀錄下每個distence使用OR的次數
+        self.OR_total_his = []
 
     def _build_net(self):
         self.s = tf.placeholder(tf.float32, [None,4, 3], name='s')  # input State
@@ -90,8 +97,8 @@ class DeepQNetwork:
                                             bias_initializer=b_initializer, name='q')
             self.eval_weights = tf.get_default_graph().get_tensor_by_name(os.path.split(self.q_eval.name)[0] + '/kernel:0')
             self.eval_bias = tf.get_default_graph().get_tensor_by_name( os.path.split(self.q_eval.name)[0] + '/bias:0')
-            print("eval weight",w_initializer)
-            print("eval bias",b_initializer)
+            # print("eval weight",w_initializer)
+            # print("eval bias",b_initializer)
 
         # ------------------ build target_net ------------------
         with tf.variable_scope('target_net'):
@@ -142,20 +149,10 @@ class DeepQNetwork:
             action = np.argmax(actions_value)
         else:
             action = np.random.randint(0, self.n_actions)
-        print("my action", action)
+        # print("my action", action)
         return action
 
-    def choose(self, observation):
-        # to have batch dimension when feed into tf placeholder
-        observation = np.reshape(observation, (1,4,3))
-        if np.random.uniform() < self.epsilon:
-            # forward feed the observation and get q value for every actions
-            actions_value = self.sess.run(self.q_eval, feed_dict={self.s: observation})
-            action = np.argmax(actions_value)
-        else:
-            action = np.random.randint(0, self.n_actions)
-        print("my action", action)
-        return action
+    
 
     # 学习
     def learn(self):
@@ -200,7 +197,6 @@ class DeepQNetwork:
 
     # 查看学习效果
     def plot_cost(self):
-        import matplotlib.pyplot as plt
         plt.plot(np.arange(len(self.cost_his)),
                  self.cost_his)
         plt.ylabel('Cost')
@@ -208,7 +204,19 @@ class DeepQNetwork:
         plt.show()
     
     def plot_age(self):
-        print("The average age is ", sum(self.age_his)/len(self.age_his))
+        print(self.age_total_his)
+        plt.plot(np.arange(len(self.age_total_his)),
+                 self.age_total_his)
+        plt.ylabel('Age')
+        plt.xlabel('Distence')
+        plt.show()
+
+    def plot_OR(self):
+        plt.plot(np.arange(len(self.OR_total_his)),
+                 self.OR_total_his)
+        plt.ylabel('OR usage')
+        plt.xlabel('Distence')
+        plt.show()
 
 
 def run_maze():
@@ -248,30 +256,38 @@ def run_maze():
 
             # break while loop when end of this episode
             # 如果游戏结束，则跳出循环
-            if step>100000:
+            if step>10000:
                 break
             # 学习的次数
             step += 1
 
 
     # input("Testing")
-    observation = env.reset()
-    for _ in range(pow(10,5)):
-        # input("pause!")
-        env.render()
+    
+    for d in range(1,10+1):
+        print("Distense ", d)
+        RL.age_his.clear()
+        observation = env.reset()
+        env.changedis(d)
+        for _ in range(pow(10,5)):
+            # input("pause")
+            env.render()
 
-        action = RL.choose(observation)
-        observation_, reward, Age= env.step(action)
-        print("The age is " , Age)
-        RL.age_his.append(Age)
-        observation = observation_
+            action = RL.choose_action(observation)
+            action = env.choose(action)
+            observation_, reward, Age= env.step(action)
+            # print("The age is " , Age)
+            RL.age_his.append(Age)
+            observation = observation_
+        RL.age_total_his.append(sum(RL.age_his)/len(RL.age_his))
+        RL.OR_total_his.append(env.sendOR_his())
     # end of game
     print('game over')
     env.destroy()
 
 
 if __name__ == '__main__':
-    env = Env.twohop_relay(3,3,5,0,40,5)
+    env = Env.twohop_relay(3,3,5)
     RL = DeepQNetwork(env.n_actions, env.n_features,
                       learning_rate=0.01,
                       reward_decay=0.9,
@@ -282,5 +298,6 @@ if __name__ == '__main__':
                       )
     env.after(100, run_maze)
     env.mainloop()
-    RL.plot_age()
     RL.plot_cost()
+    RL.plot_age()
+    RL.plot_OR()
