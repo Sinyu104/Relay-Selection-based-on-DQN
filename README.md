@@ -7,7 +7,7 @@ In our work, each relay maintains two finite buffers, including a data buffer, w
 <p align="center">
     <img src="sys_model.jpg" alt="image1" width="400"/>
 </p>
-<p style="text-align: center;">Figure 1</p>
+<p style="text-align: center">Figure 1</p>
 
 ## 2. How to run the code?
 ```

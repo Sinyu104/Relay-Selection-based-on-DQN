@@ -1,7 +1,7 @@
 # -*- coding: UTF-8 -*-
 import os
 
-from sqlalchemy import false, true
+# from sqlalchemy import false, true
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import environment as Env
 import tensorflow.compat.v1 as tf
@@ -14,6 +14,8 @@ import matplotlib.pyplot as plt
 class DeepQNetwork:
     def __init__(
             self,
+            # 输總共多少的relay
+            rly_num,
             # 输出多少个action的值
             n_actions,
             # 长宽高等，用feature预测action的值
@@ -34,6 +36,7 @@ class DeepQNetwork:
             e_greedy_increment=0.01,
             output_graph=False,
     ):
+        self.rly_num = rly_num
         self.n_actions = n_actions
         self.n_features = n_features
         self.lr = learning_rate
@@ -72,59 +75,81 @@ class DeepQNetwork:
         self.sess.run(tf.global_variables_initializer())
         # 记录下每步的误差
         self.cost_his = []
+        # 记录下每步的reward
+        self.reward_his = []
         # 紀錄下每步的age
         self.age_his = []
+        # 紀錄下每步random的age
+        self.random_age_his = []
+        # 紀錄下每步用DBRS走的age
+        self.dbrs_age_his = []
+        # 紀錄下每步用SARLAT走的age
+        self.sarlat_age_his = []
         # 紀錄下每個distence的平均age
         self.age_total_his = []
+        # 紀錄下每個distence的平均 dbrs age
+        self.dbrs_age_total_his = []
+        # 紀錄下每個distence的平均 random age
+        self.random_age_total_his = []
+        # 紀錄下每個distence的平均 SARLAT age
+        self.sarlat_age_total_his = []
         # 紀錄下每個distence使用OR的次數
         self.OR_total_his = []
 
     def _build_net(self):
-        self.s = tf.placeholder(tf.float32, [None,4, 3], name='s')  # input State
-        self.s_ = tf.placeholder(tf.float32, [None,4, 3], name='s_')  # input Next State
-        self.r = tf.placeholder(tf.float32, [None, 1], name='r')  # input Reward
-        self.a = tf.placeholder(tf.int32, [None, 1], name='a')  # input Action
+        print(self.rly_num)
+        self.s = tf.placeholder(tf.float32, [None,5, self.rly_num], name='s')  # input State
+        self.s_ = tf.placeholder(tf.float32, [None,5, self.rly_num], name='s_')  # input Next State
+        self.r = tf.placeholder(tf.float32, [None, ], name='r')  # input Reward
+        self.a = tf.placeholder(tf.int32, [None, ], name='a')  # input Action
 
         w_initializer, b_initializer = tf.random_normal_initializer(0., 0.3), tf.constant_initializer(0.1)
 
 
         # ------------------ build evaluate_net ------------------
         with tf.variable_scope('eval_net'):
-            e1 = tf.layers.dense(self.s, 4, tf.nn.relu, kernel_initializer=w_initializer,
+            e1 = tf.layers.dense(self.s, 5, tf.nn.relu, kernel_initializer=w_initializer,
                                     bias_initializer=b_initializer, name='e1')
             e1 = tf.layers.flatten(e1)
-            self.q_eval = tf.layers.dense(e1, 9, kernel_initializer=w_initializer,
+            self.q_eval = tf.layers.dense(e1, self.n_actions, kernel_initializer=w_initializer,
                                             bias_initializer=b_initializer, name='q')
             self.eval_weights = tf.get_default_graph().get_tensor_by_name(os.path.split(self.q_eval.name)[0] + '/kernel:0')
             self.eval_bias = tf.get_default_graph().get_tensor_by_name( os.path.split(self.q_eval.name)[0] + '/bias:0')
-            # print("eval weight",w_initializer)
-            # print("eval bias",b_initializer)
+            
+            print(self.q_eval)
+            print(self.eval_weights)
 
         # ------------------ build target_net ------------------
         with tf.variable_scope('target_net'):
-            t1 = tf.layers.dense(self.s_, 4, tf.nn.relu, kernel_initializer=w_initializer,
+            t1 = tf.layers.dense(self.s_, 5, tf.nn.relu, kernel_initializer=w_initializer,
                                     bias_initializer=b_initializer, name='t1')
             t1 = tf.layers.flatten(t1)
-            self.q_next = tf.layers.dense(t1, 9, kernel_initializer=w_initializer,
+            self.q_next = tf.layers.dense(t1, self.n_actions, kernel_initializer=w_initializer,
                                             bias_initializer=b_initializer, name='t2')
             self.tar_weights = tf.get_default_graph().get_tensor_by_name(os.path.split(self.q_next.name)[0] + '/kernel:0')
             self.tar_bias = tf.get_default_graph().get_tensor_by_name( os.path.split(self.q_next.name)[0] + '/bias:0')
         
         with tf.variable_scope('q_target'):
-            
-            q_target = self.r + self.gamma * tf.reduce_max(self.q_next, axis=1, name='Qmax_s_', keepdims = True)    # shape=(None, )
+            print(self.r)
+            q_target = self.r + self.gamma * tf.reduce_max(self.q_next, axis=1, name='Qmax_s_')    # shape=(None, )
+            print(q_target)
             self.q_target = tf.stop_gradient(q_target)
+            print(self.q_target)
             
 
         with tf.variable_scope('q_eval'):
-            a_indices = tf.reshape(tf.stack([tf.reshape(tf.range(self.batch_size, dtype=tf.int32),[self.batch_size,1]), self.a], axis=1),[self.batch_size,2])
-            self.q_eval_wrt_a = tf.reshape(tf.gather_nd(params=self.q_eval, indices=a_indices),[self.batch_size,1])    # shape=(None, )
-
+            a_indices = tf.stack([tf.range(tf.shape(self.a)[0], dtype=tf.int32), self.a], axis=1)
+            self.q_eval_wrt_a = tf.gather_nd(params=self.q_eval, indices=a_indices)    # shape=(None, )
+            
         with tf.variable_scope('loss'):
+            print(self.q_target)
+            print(self.q_eval_wrt_a)
             self.loss = tf.reduce_mean(tf.squared_difference(self.q_target, self.q_eval_wrt_a, name='TD_error'))
+            print(self.loss)
             
         with tf.variable_scope('train'):
-            self._train_op = tf.train.RMSPropOptimizer(self.lr).minimize(loss = self.loss)
+            self._train_op = tf.train.RMSPropOptimizer(self.lr).minimize(self.loss)
+        
     # 存储记忆
     def store_transition(self, s, a, r, s_):
         if not hasattr(self, 'memory_counter'):
@@ -142,7 +167,7 @@ class DeepQNetwork:
     # 选择行为
     def choose_action(self, observation):
         # to have batch dimension when feed into tf placeholder
-        observation = np.reshape(observation, (1,4,3))
+        observation = np.reshape(observation, (1,5,self.rly_num))
         if np.random.uniform() < self.epsilon:
             # forward feed the observation and get q value for every actions
             actions_value = self.sess.run(self.q_eval, feed_dict={self.s: observation})
@@ -151,7 +176,20 @@ class DeepQNetwork:
             action = np.random.randint(0, self.n_actions)
         # print("my action", action)
         return action
+    
+    # Random选择行为
+    def random_choose(self):
+        action = np.random.randint(0, self.n_actions)
+        return action
 
+    # 选择行为
+    def dqn_choose(self, observation):
+        # to have batch dimension when feed into tf placeholder
+        observation = np.reshape(observation, (1,5,self.rly_num))
+        # forward feed the observation and get q value for every actions
+        actions_value = self.sess.run(self.q_eval, feed_dict={self.s: observation})
+        action = np.argmax(actions_value)
+        return action
     
 
     # 学习
@@ -159,11 +197,8 @@ class DeepQNetwork:
         # check to replace target parameters
         if self.learn_step_counter % self.replace_target_iter == 0:
             t = self.sess.run(self.target_replace_op)
-            # print(t)
-            print('\ntarget_params_replaced\n')
-            # input("replace target")
+            print('target_params_replaced\n')
             
-
         # sample batch memory from all memory
         
         if self.memory_counter > self.memory_size:
@@ -173,18 +208,20 @@ class DeepQNetwork:
         batch_memory = [self.memory[i] for i in sample_index]
         
         # if self.learn_step_counter == 10 or self.learn_step_counter == 0 or self.learn_step_counter == 100 or self.learn_step_counter == 199 or self.learn_step_counter == 200 or self.learn_step_counter == 201:
-        #     evalqq = self.sess.run(self.eval_weights, feed_dict={self.s: [row[0] for row in batch_memory]})
-        #     print("evalqq",evalqq)
-        #     tarqq = self.sess.run(self.tar_weights, feed_dict={self.s_: [row[0] for row in batch_memory]})
-        #     print("tarqq",tarqq)
-        #     input("stop")
+        # evalqq = self.sess.run(self.eval_weights, feed_dict={self.s: [row[0] for row in batch_memory]})
+        # print("evalqq",evalqq)
+        # tarqq = self.sess.run(self.tar_weights, feed_dict={self.s_: [row[0] for row in batch_memory]})
+        # print("tarqq",tarqq)
+        # q_eval = self.sess.run(self.q_eval, feed_dict={self.s: [row[0] for row in batch_memory]})
+        # print("q_eval",q_eval)
+        # input("stop")
         
         _, cost = self.sess.run(
                     [self._train_op, self.loss],
                     feed_dict={
                         self.s: [row[0] for row in batch_memory],
-                        self.a: [[row[1]] for row in batch_memory],
-                        self.r: [[row[2]] for row in batch_memory],
+                        self.a: [row[1] for row in batch_memory],
+                        self.r: [row[2] for row in batch_memory],
                         self.s_: [row[3] for row in batch_memory],
                     })
         # print("cost: ",cost)
@@ -203,34 +240,47 @@ class DeepQNetwork:
         plt.xlabel('training steps')
         plt.show()
     
+    def plot_reward(self):
+        plt.plot(np.arange(len(self.reward_his)),
+                 self.reward_his)
+        plt.ylabel('Reward')
+        plt.xlabel('training steps')
+        plt.show()
+    
     def plot_age(self):
-        print(self.age_total_his)
         plt.plot(np.arange(len(self.age_total_his)),
                  self.age_total_his)
+        plt.plot(np.arange(len(self.random_age_total_his)),
+                self.random_age_total_his)
+        # plt.plot(np.arange(len(self.dbrs_age_total_his)),
+        #         self.dbrs_age_total_his)
+        plt.plot(np.arange(len(self.sarlat_age_total_his)),
+                 self.sarlat_age_total_his)
         plt.ylabel('Age')
-        plt.xlabel('Distence')
+        plt.xlabel('Steps')
+        plt.legend(labels=['DQN','random','DBRS','SAR-LAT'],loc='best')
         plt.show()
 
-    def plot_OR(self):
-        plt.plot(np.arange(len(self.OR_total_his)),
-                 self.OR_total_his)
-        plt.ylabel('OR usage')
-        plt.xlabel('Distence')
-        plt.show()
+    # def plot_OR(self):
+    #     plt.plot(np.arange(len(self.OR_total_his)),
+    #              self.OR_total_his)
+    #     plt.ylabel('OR usage')
+    #     plt.xlabel('Distence')
+    #     plt.show()
 
 
 def run_maze():
     # 控制到第几步学习
     step = 0
     # 进行300回合游戏
-    for episode in range(50):
+    for episode in range(1,50+1):
         # initial observation
         # 初始化环境，相当于每回合重新开始
         print("Reset.")
         observation = env.reset()
         
 
-        while True:
+        for _ in range(2000):
             # fresh env
             # 刷新环境
             env.render()
@@ -243,6 +293,8 @@ def run_maze():
             # 环境根据动作，做出反应，主要给出state，reward
             observation_, reward, Age= env.step(action)
 
+            RL.reward_his.append(reward)
+
             # DQN存储记忆，即（s,a,r,s）
             RL.store_transition(observation, action, reward, observation_)
 
@@ -254,45 +306,90 @@ def run_maze():
             # 将下一个state作为本次的state
             observation = observation_
 
-            # break while loop when end of this episode
-            # 如果游戏结束，则跳出循环
-            if step>10000:
-                break
             # 学习的次数
             step += 1
+        print("episode: {}/50".format(episode))
 
 
     # input("Testing")
     
-    for d in range(1,10+1):
-        print("Distense ", d)
+    for d in range(5,5+1):
+        print("Distance ", d)
         RL.age_his.clear()
         observation = env.reset()
         env.changedis(d)
-        for _ in range(pow(10,5)):
+        for _ in range(2*pow(10,3)):
             # input("pause")
-            env.render()
-
-            action = RL.choose_action(observation)
+            action = RL.dqn_choose(observation)
             action = env.choose(action)
+            # print("So, the action is ", action)
             observation_, reward, Age= env.step(action)
             # print("The age is " , Age)
             RL.age_his.append(Age)
             observation = observation_
         RL.age_total_his.append(sum(RL.age_his)/len(RL.age_his))
-        RL.OR_total_his.append(env.sendOR_his())
-    # end of game
+    print(RL.age_total_his)
+
+    # for d in range(1,10+1):
+    #     print("Distense ", d)
+    #     RL.dbrs_age_his.clear()
+    #     observation = env.reset()
+    #     env.changedis(d)
+    #     for _ in range(2*pow(10,3)):
+    #         # input("pause")
+    #         action = env.DBRS_OR()
+    #         # print("So, the action is ", action)
+    #         observation_, reward, Age= env.step(action)
+    #         # print("The age is " , Age)
+    #         RL.dbrs_age_his.append(Age)
+    #         observation = observation_
+    #     RL.dbrs_age_total_his.append(sum(RL.dbrs_age_his)/len(RL.dbrs_age_his))
+    # print(RL.dbrs_age_total_his)
+
+    for d in range(5,5+1):
+        print("Distense ", d)
+        RL.random_age_his.clear()
+        observation = env.reset()
+        env.changedis(d)
+        for _ in range(2*pow(10,3)):
+            # input("pause")
+            # print("observation ", observation)
+            action = RL.random_choose()
+            # print("So, the action is ", action)
+            observation_, reward, Age= env.step(action)
+            RL.random_age_his.append(Age)
+            observation = observation_
+        RL.random_age_total_his.append(sum(RL.random_age_his)/len(RL.random_age_his))
+    print(RL.random_age_total_his)
+
+    for d in range(5,5+1):
+        print("Distance ", d)
+        RL.sarlat_age_his.clear()
+        observation = env.reset()
+        env.changedis(d)
+        for _ in range(2*pow(10,3)):
+            # input("pause")
+            # print("observation ", observation)
+            action = env.SARLAT()
+            # print("So, the action is ", action)
+            observation_, reward, Age= env.step(action)
+            # print("The age is ", Age)
+            RL.sarlat_age_his.append(Age)
+            observation = observation_
+        RL.sarlat_age_total_his.append(sum(RL.sarlat_age_his)/len(RL.sarlat_age_his))
+    print(RL.sarlat_age_total_his)
+
     print('game over')
     env.destroy()
 
 
 if __name__ == '__main__':
-    env = Env.twohop_relay(3,3,5)
-    RL = DeepQNetwork(env.n_actions, env.n_features,
+    env = Env.twohop_relay(7,3,5)
+    RL = DeepQNetwork(env.rly_num, env.n_actions, env.n_features,
                       learning_rate=0.01,
-                      reward_decay=0.9,
+                      reward_decay=1,
                       e_greedy=0.9,
-                      replace_target_iter=200,
+                      replace_target_iter=1000,
                       memory_size=10000,
                       # output_graph=True
                       )
@@ -300,4 +397,4 @@ if __name__ == '__main__':
     env.mainloop()
     RL.plot_cost()
     RL.plot_age()
-    RL.plot_OR()
+    # RL.plot_OR()
