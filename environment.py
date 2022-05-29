@@ -26,14 +26,20 @@ Ps = pow(10,SNR/10.0)*N0
 Pr = Ps/eng_ratio
 
 
-def give_channel():
-    return pow(abs(1/math.sqrt(2)*(np.random.normal(0,1)+np.random.normal(0,1)*1j)),2)
-
 def choose_channel(channels):
     return np.random.choice(channels)
 
 def NormalizeData(data):
     return data / np.max(data)
+
+def give_channel(dis):
+    channel = []
+    for d in dis:
+        for _ in range(100000):
+            channel.append(pow(abs(1/math.sqrt(2)*(np.random.normal(0,1)+np.random.normal(0,1)*1j)),2)*pow(d, -2))
+    max_channel = np.amax(channel)
+    channel[:] = [x / max_channel for x in channel]
+    return channel, max_channel
 
 class twohop_relay(tk.Tk, object):
     def __init__(self, rly_num, data_size, eng_size):
@@ -43,10 +49,10 @@ class twohop_relay(tk.Tk, object):
         self.rly_num = rly_num
         self.data_size = data_size
         self.eng_size = eng_size
-        self.dis = 5
         self.ini_data = 1
         self.ini_eng = 1
-        self.n_features = 4
+        self.n_features = 5
+        self.dis = [5]
         self.age = [queue.Queue() for _ in range(self.rly_num)]
         self.cur_age = [0 for _ in range(self.rly_num)]
         self._build_system()
@@ -56,18 +62,18 @@ class twohop_relay(tk.Tk, object):
     def _build_system(self):
         self.data = list(itertools.repeat(self.ini_data, self.rly_num))
         self.eng = list(itertools.repeat(self.ini_eng, self.rly_num))
-        self.random_channel =  np.array([give_channel() for _ in range(100)])
-        self.maxchannel = np.max(self.random_channel)
-        self.h = [choose_channel(NormalizeData(self.random_channel)) for _ in range(self.rly_num)]
-        self.g = [choose_channel(NormalizeData(self.random_channel)) for _ in range(self.rly_num)]
+        self.random_channel , self.maxchannel=  give_channel(self.dis)
+        self.h = [choose_channel(self.random_channel) for _ in range(self.rly_num)]
+        self.g = [choose_channel(self.random_channel) for _ in range(self.rly_num)]
         self.snr1 = [Ps*pow(abs(self.h[i]*self.maxchannel),2)/N0 for i in range(self.rly_num)]
         self.snr2 = [Pr*pow(abs(self.g[i]*self.maxchannel),2)/N0 for i in range(self.rly_num)]
+
 
     def sendOR_his(self):
         return self.OR_his
     
-    def changedis(self, dist):
-        self.dis = dist
+    def returnstate(self):
+        return [self.h, self.g, self.data, self.eng, self.age[0].queue, self.age[1].queue, self.age[2].queue, self.cur_age, self.maxchannel]
     
     def reset(self):
         # return observation
@@ -85,13 +91,9 @@ class twohop_relay(tk.Tk, object):
         self.cur_age = [0 for _ in range(self.rly_num)]
         self.data_normalize = [x / (self.data_size-1) for x in self.data]
         self.eng_normalize = [x / (self.eng_size) for x in self.eng]
-        self.cur_age_normalize = self.cur_age
-        for x in range(self.rly_num):
-            if np.max(self.cur_age)==0:
-                self.cur_age_normalize[x]=self.cur_age[x]
-            else:
-                self.cur_age_normalize[x] = self.cur_age[x]/np.max(self.cur_age)
+        self.cur_age_normalize = self.cur_age.copy()
         return [self.h,self.g, self.data_normalize, self.eng_normalize, self.cur_age_normalize]
+    
 
     def Isvalidaction(self, action):
         recep = int(action/self.rly_num)
@@ -119,10 +121,9 @@ class twohop_relay(tk.Tk, object):
     
     def choose(self, action):
         if self.Isvalidaction(action) == False:
-            action = db.DBRS(rly_num=self.rly_num, data_size=self.data_size, snr1=self.snr1, snr2=self.snr2, data_bf=self.data, eng_bf=self.eng)
-            if action < 0:
-                action = self.ORchoosing()
-        # print("my action", action)
+            action = SRLT.SAR_LAT(rly_num=self.rly_num, data_size=self.data_size, data_bf=self.data, eng_bf=self.eng, cur_age = self.cur_age)
+        if action < 0:
+            action = self.DBRS_OR()
         return action
     
     def DBRS_OR(self):
@@ -138,7 +139,7 @@ class twohop_relay(tk.Tk, object):
             return np.random.randint(0, self.n_actions)
         action = SRLT.SAR_LAT(rly_num=self.rly_num, data_size=self.data_size, data_bf=self.data, eng_bf=self.eng, cur_age = self.cur_age)
         if action < 0:
-            action = self.DBRS_OR()
+            action = self.ORchoosing()
         return action
         
 
@@ -147,18 +148,19 @@ class twohop_relay(tk.Tk, object):
         # print("current state ", cur_state)
         recep = int(action/self.rly_num)
         trans = int(action%self.rly_num)
-        origin_age = 0
-        for a in self.age:
-            for _ in range(a.qsize()):
-                temp = a.get()
-                origin_age+=temp
-                a.put(temp)
+        # print("Recep: ", recep, "Trans: ", trans)
+        # origin_age = 0
+        # for a in self.age:
+        #     for _ in range(a.qsize()):
+        #         temp = a.get()
+        #         origin_age+=temp
+        #         a.put(temp)
         # print("origin_age: ", origin_age)
 
 
         if all(flag == 0 for flag in self.eng):   # It's EES state
             for r in range(0,self.rly_num):
-                self.eng[r] = self.eng[r]+ min(math.floor(self.h[r]*self.maxchannel*eg_eff*eng_ratio*pow(self.dis, -2)),self.eng_size)
+                self.eng[r] = self.eng[r]+ min(math.floor(self.h[r]*self.maxchannel*eg_eff*eng_ratio),self.eng_size)
             # print("It's EES.")
             age=0
             for a in self.age:
@@ -166,9 +168,11 @@ class twohop_relay(tk.Tk, object):
                     temp = a.get()+1
                     a.put(temp)
                     age+=temp
-            age = age / sum(self.data)
+            reward = -10
+            age = -1
             # reward = 1/(origin_age - reward)
-            reward = -1*age*sum(self.data)
+            # sum(self.eng)/self.eng_size/self.rly_num
+            
             self.render()
             # reward = (origin_age - reward)/10
             # for a in self.age:
@@ -184,9 +188,11 @@ class twohop_relay(tk.Tk, object):
                     temp = a.get()+1
                     a.put(temp)
                     age+=temp
-            age = age / sum(self.data)
+
+            reward = -10
+            age = -1
             # reward = 1/(origin_age - reward)
-            reward = -1*age*sum(self.data)
+            
             self.render()
             # reward = (origin_age - reward)/10
             # for a in self.age:
@@ -202,10 +208,10 @@ class twohop_relay(tk.Tk, object):
                     temp = a.get()+1
                     a.put(temp)
                     age+=temp
-            age = age / sum(self.data)
+            reward = -10
+            age = -1
             # reward = 1/(origin_age - reward)
             # reward = (origin_age - reward)/10
-            reward = -1*age*sum(self.data)
             self.render()
             # for a in self.age:
             #     print("Age ",a.queue)
@@ -218,24 +224,25 @@ class twohop_relay(tk.Tk, object):
             self.data[trans]-=1
             for r in range(0,self.rly_num):  # transmit data to the reception reley, while the others charging
                 if r != recep:
-                    self.eng[r]=min(math.floor(self.eng[r]+self.h[r]*self.maxchannel*eg_eff*eng_ratio*pow(self.dis, -2)),self.eng_size)
+                    self.eng[r]=min(math.floor(self.eng[r]+self.h[r]*self.maxchannel*eg_eff*eng_ratio),self.eng_size)
+
             self.eng[trans]-=1
             # print("It's normal")
             # print("Recep ", recep, " Trans ", trans)
+            
 
             # reward function
             if recep != trans:
                 age=0
-                self.age[trans].get()
+                reward = self.age[trans].get()
                 for a in self.age:
                     for _ in range(a.qsize()):
                         temp = a.get()+1
                         a.put(temp)
                         age+=temp
-                age = age / sum(self.data)
-                # reward = 1/abs(origin_age - reward) if origin_age - reward!=0 else 2
-                # reward = (origin_age - reward)/10
-                reward = -1*age*(sum(self.data)-1)
+                
+                age = reward 
+                reward = -1*reward
                 self.age[recep].put(0)
             else:
                 age=0
@@ -245,22 +252,19 @@ class twohop_relay(tk.Tk, object):
                             temp = a.get()+1
                             a.put(temp)
                             age+=temp
-                    age = age / sum(self.data)
+                    reward = 0
+                    age = 0
                 else:
-                    self.age[trans].get()
+                    reward = self.age[trans].get()
                     for a in self.age:
                         for _ in range(a.qsize()):
                             temp = a.get()+1
                             a.put(temp)
                             age+=temp
-                    age = age / sum(self.data)
+                    age = reward
+                    reward = 0
                     self.age[recep].put(0)
                 
-                if age == 0:
-                    age=0.1
-                # reward = 1/abs(origin_age - reward) if origin_age - reward!=0 else 2
-                # reward = (origin_age - age)
-                reward = -1*age*sum(self.data)
             # for a in self.age:
             #     print("Age ",a.queue)
             # print("reward ", reward)
@@ -268,21 +272,23 @@ class twohop_relay(tk.Tk, object):
             next_state = [self.h,self.g, self.data_normalize, self.eng_normalize, self.cur_age_normalize]
             # print("next state ", next_state)
         return next_state, reward, age
+    
 
     def render(self):
-        self.h = [choose_channel(NormalizeData(self.random_channel)) for _ in range(self.rly_num)]
-        self.g = [choose_channel(NormalizeData(self.random_channel)) for _ in range(self.rly_num)]
+        self.h = [choose_channel(self.random_channel) for _ in range(self.rly_num)]
+        self.g = [choose_channel(self.random_channel) for _ in range(self.rly_num)]
         self.snr1 = [Ps*pow(abs(self.h[i]*self.maxchannel),2)/N0 for i in range(self.rly_num)]
         self.snr2 = [Pr*pow(abs(self.g[i]*self.maxchannel),2)/N0 for i in range(self.rly_num)]
         for i in range(self.rly_num):
             if self.age[i].empty():
                 self.cur_age[i]=0
             else:
-                self.cur_age[i]=self.age[i].queue[0]
+                self.cur_age[i]=list(self.age[i].queue)[0]
+        
         self.data_normalize = [x / (self.data_size-1) for x in self.data]
         self.eng_normalize = [x / (self.eng_size) for x in self.eng]
-        for x in range(self.rly_num):
+        for i in range(self.rly_num):
             if np.max(self.cur_age)==0:
-                self.cur_age_normalize[x]=self.cur_age[x]
+                self.cur_age_normalize[i]=self.cur_age
             else:
-                self.cur_age_normalize[x] = self.cur_age[x]/np.max(self.cur_age)
+                self.cur_age_normalize[i] = self.cur_age[i]/np.max(self.cur_age)

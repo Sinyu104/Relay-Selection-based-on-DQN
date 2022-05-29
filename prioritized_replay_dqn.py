@@ -1,5 +1,8 @@
 # -*- coding: UTF-8 -*-
+from argparse import Action
+from ftplib import B_CRLF
 import os
+from pickle import NONE
 
 # from sqlalchemy import false, true
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -10,6 +13,120 @@ tf.disable_v2_behavior()
 import numpy as np
 import matplotlib.pyplot as plt
 
+class SumTree(object):
+    
+    data_pointer = 0
+
+    def __init__(self, capacity):
+        self.capacity = capacity  # for all priority values
+        self.tree = np.zeros(2 * capacity - 1)
+        # [--------------Parent nodes-------------][-------leaves to recode priority-------]
+        #             size: capacity - 1                       size: capacity
+        self.data = np.zeros(capacity, dtype=object)  # for all transitions
+        # [--------------data frame-------------]
+        #             size: capacity
+
+    def add(self, p, data):
+        tree_idx = self.data_pointer + self.capacity - 1
+        self.data[self.data_pointer] = data  # update data_frame
+        self.update(tree_idx, p)  # update tree_frame
+        # print("p ", self.tree)
+        self.data_pointer += 1
+        if self.data_pointer >= self.capacity:  # replace when exceed the capacity
+            self.data_pointer = 0
+
+    def update(self, tree_idx, p):
+        change = p - self.tree[tree_idx]
+        self.tree[tree_idx] = p
+        # then propagate the change through tree
+        while tree_idx != 0:    # this method is faster than the recursive loop in the reference code
+            tree_idx = (tree_idx - 1) // 2
+            self.tree[tree_idx] += change
+
+    def get_leaf(self, v):
+        """
+        Tree structure and array storage:
+        Tree index:
+             0         -> storing priority sum
+            / \
+          1     2
+         / \   / \
+        3   4 5   6    -> storing priority for transitions
+        Array type for storing:
+        [0,1,2,3,4,5,6]
+        """
+        parent_idx = 0
+        while True:     # the while loop is faster than the method in the reference code
+            cl_idx = 2 * parent_idx + 1         # this leaf's left and right kids
+            cr_idx = cl_idx + 1
+            if cl_idx >= len(self.tree):        # reach bottom, end search
+                leaf_idx = parent_idx
+                break
+            else:       # downward search, always search for a higher priority node
+                if v <= self.tree[cl_idx]:
+                    parent_idx = cl_idx
+                else:
+                    v -= self.tree[cl_idx]
+                    parent_idx = cr_idx
+
+        data_idx = leaf_idx - self.capacity + 1
+        # print("leaf_idx ", leaf_idx, "self.tree[leaf_idx]: ", self.tree[leaf_idx], "self.data[data_idx]: ", self.data[data_idx])
+        return leaf_idx, self.tree[leaf_idx], self.data[data_idx]
+
+    @property
+    def total_p(self):
+        return self.tree[0]  # the root
+
+
+class Memory(object):  # stored as ( s, a, r, s_ ) in SumTree
+    """
+    This Memory class is modified based on the original code from:
+    https://github.com/jaara/AI-blog/blob/master/Seaquest-DDQN-PER.py
+    """
+    epsilon = 0.01  # small amount to avoid zero priority
+    alpha = 0.6  # [0~1] convert the importance of TD error to priority
+    beta = 0.4  # importance-sampling, from initial value increasing to 1
+    beta_increment_per_sampling = 0.001
+    abs_err_upper = 1.  # clipped abs error
+
+    def __init__(self, capacity):
+        self.tree = SumTree(capacity)
+
+    def store(self, transition):
+        max_p = np.max(self.tree.tree[-self.tree.capacity:])
+        # print(self.tree.tree, "size: ", self.tree.tree.shape)
+        # print(self.tree.tree[-self.tree.capacity:], "size: ", self.tree.tree[-self.tree.capacity:].shape)
+        # print("max_p: ", max_p)
+        
+        if max_p == 0:
+            max_p = self.abs_err_upper
+        self.tree.add(max_p, transition)   # set the max p for new p
+
+    def sample(self, n):
+        b_idx, b_memory, ISWeights = np.empty((n,), dtype=np.int32), [], np.empty((n, 1))
+        pri_seg = self.tree.total_p / n       # priority segment
+        self.beta = np.min([1., self.beta + self.beta_increment_per_sampling])  # max = 1
+        min_prob = np.min(self.tree.tree[-self.tree.capacity:]) / self.tree.total_p     # for later calculate ISweight
+        if min_prob == 0:
+            min_prob = np.min(self.tree.tree[-self.tree.capacity: -self.tree.capacity+self.tree.data_pointer]) / self.tree.total_p
+        for i in range(n):
+            a, b = pri_seg * i, pri_seg * (i + 1)
+            v = np.random.uniform(a, b)
+            # print("a ", a, "b ", b, "v ", v)
+            idx, p, data = self.tree.get_leaf(v)
+            # print("idx ", idx, "p ", p, "data ", data)
+            prob = p / self.tree.total_p
+            ISWeights[i, 0] = np.power(prob/min_prob, -self.beta)
+            b_idx[i] = idx
+            b_memory.append(data)
+        return b_idx, b_memory, ISWeights
+
+    def batch_update(self, tree_idx, abs_errors):
+        abs_errors += self.epsilon  # convert to abs and avoid 0
+        clipped_errors = np.minimum(abs_errors, self.abs_err_upper)
+        ps = np.power(clipped_errors, self.alpha)
+        for ti, p in zip(tree_idx, ps):
+            self.tree.update(ti, p)
 
 class DeepQNetwork:
     def __init__(
@@ -29,11 +146,11 @@ class DeepQNetwork:
             # 隔多少步更换target神经网络的参数变成最新的
             replace_target_iter=300,
             # 记忆库的容量大小
-            memory_size=10000,
+            memory_size=1000,
             # 神经网络学习时一次学习的大小
             batch_size=16,
             # 不断的缩小随机的范围
-            e_greedy_increment=0.01,
+            e_greedy_increment=0.005,
             output_graph=False,
     ):
         self.rly_num = rly_num
@@ -47,14 +164,14 @@ class DeepQNetwork:
         self.memory_size = memory_size
         self.batch_size = batch_size
         self.epsilon_increment = e_greedy_increment
-        self.epsilon = 0.05 if e_greedy_increment is not None else self.epsilon_max
+        self.epsilon = 0.01 if e_greedy_increment is not None else self.epsilon_max
 
         # total learning step
         # 记录学习了多少步
         self.learn_step_counter = 0
 
         # initialize zero memory [s, a, r, s_]
-        self.memory = []
+        self.memory = Memory(capacity=memory_size)
 
         # consist of [target_net, evaluate_net]
         self._build_net()
@@ -97,72 +214,44 @@ class DeepQNetwork:
         self.OR_total_his = []
 
     def _build_net(self):
-        print(self.rly_num)
-        self.s = tf.placeholder(tf.float32, [None,self.n_features, self.rly_num], name='s')  # input State
-        self.s_ = tf.placeholder(tf.float32, [None,self.n_features, self.rly_num], name='s_')  # input Next State
-        self.r = tf.placeholder(tf.float32, [None, ], name='r')  # input Reward
-        self.a = tf.placeholder(tf.int32, [None, ], name='a')  # input Action
 
-        w_initializer, b_initializer = tf.random_normal_initializer(0., 0.3), tf.constant_initializer(0.1)
-
+        def build_layers(s, n_l1, w_initializer, b_initializer, train):
+            with tf.variable_scope('l1'):
+                e1 = tf.layers.dense(s, n_l1, tf.nn.relu, kernel_initializer=w_initializer,
+                                        bias_initializer=b_initializer, name='e1', trainable = train)
+                e1 = tf.layers.flatten(e1)
+                out = tf.layers.dense(e1, self.n_actions, kernel_initializer=w_initializer,
+                                                bias_initializer=b_initializer, name='q', trainable = train)
+                return out
 
         # ------------------ build evaluate_net ------------------
+        self.s = tf.placeholder(tf.float32, [None, self.n_features, self.rly_num], name='s')  # input
+        self.q_target = tf.placeholder(tf.float32, [None, self.n_actions], name='Q_target')  # for calculating loss
+        self.ISWeights = tf.placeholder(tf.float32, [None, 1], name='IS_weights')
         with tf.variable_scope('eval_net'):
-            e1 = tf.layers.dense(self.s, 20, tf.nn.relu, kernel_initializer=w_initializer,
-                                    bias_initializer=b_initializer, name='e1')
-            e1 = tf.layers.flatten(e1)
-            self.q_eval = tf.layers.dense(e1, self.n_actions, kernel_initializer=w_initializer,
-                                            bias_initializer=b_initializer, name='q')
-            self.eval_weights = tf.get_default_graph().get_tensor_by_name(os.path.split(self.q_eval.name)[0] + '/kernel:0')
-            self.eval_bias = tf.get_default_graph().get_tensor_by_name( os.path.split(self.q_eval.name)[0] + '/bias:0')
-            
-            print("q_eval ", self.q_eval)
-            print(self.eval_weights)
+            n_l1, w_initializer, b_initializer = \
+                20, tf.random_normal_initializer(0., 0.3), tf.constant_initializer(0.1)  # config of layers
 
-        # ------------------ build target_net ------------------
-        with tf.variable_scope('target_net'):
-            t1 = tf.layers.dense(self.s_, 20, tf.nn.relu, kernel_initializer=w_initializer,
-                                    bias_initializer=b_initializer, name='t1')
-            t1 = tf.layers.flatten(t1)
-            self.q_next = tf.layers.dense(t1, self.n_actions, kernel_initializer=w_initializer,
-                                            bias_initializer=b_initializer, name='t2')
-            self.tar_weights = tf.get_default_graph().get_tensor_by_name(os.path.split(self.q_next.name)[0] + '/kernel:0')
-            self.tar_bias = tf.get_default_graph().get_tensor_by_name( os.path.split(self.q_next.name)[0] + '/bias:0')
-        
-        with tf.variable_scope('q_target'):
-            print(self.r)
-            q_target = self.r + self.gamma * tf.reduce_max(self.q_next, axis=1, name='Qmax_s_')    # shape=(None, )
-            print(q_target)
-            self.q_target = tf.stop_gradient(q_target)
-            print(self.q_target)
-            
+            self.q_eval = build_layers(self.s, n_l1, w_initializer, b_initializer, True)
 
-        with tf.variable_scope('q_eval'):
-            a_indices = tf.stack([tf.range(tf.shape(self.a)[0], dtype=tf.int32), self.a], axis=1)
-            self.q_eval_wrt_a = tf.gather_nd(params=self.q_eval, indices=a_indices)    # shape=(None, )
-            
         with tf.variable_scope('loss'):
-            print(self.q_target)
-            print(self.q_eval_wrt_a)
-            self.loss = tf.reduce_mean(tf.squared_difference(self.q_target, self.q_eval_wrt_a, name='TD_error'))
-            print(self.loss)
+            self.abs_errors = tf.reduce_sum(tf.abs(self.q_target - self.q_eval), axis=1)    # for updating Sumtree
+            self.loss = tf.reduce_mean(self.ISWeights * tf.squared_difference(self.q_target, self.q_eval))
             
         with tf.variable_scope('train'):
             self._train_op = tf.train.RMSPropOptimizer(self.lr).minimize(self.loss)
+
+        # ------------------ build target_net ------------------
+        self.s_ = tf.placeholder(tf.float32, [None, self.n_features, self.rly_num], name='s_')    # input
+        with tf.variable_scope('target_net'):
+            self.q_next = build_layers(self.s_,  n_l1, w_initializer, b_initializer, False)
         
     # 存储记忆
     def store_transition(self, s, a, r, s_):
-        if not hasattr(self, 'memory_counter'):
-            self.memory_counter = 0
-        
         transition = [s, a, r, s_]
-        # replace the old memory with new memory
-        index = self.memory_counter % self.memory_size
-        if(len(self.memory)>index):
-            self.memory[index] = transition
-        else:
-            self.memory.append(transition)
-        self.memory_counter += 1
+        # np.array([np.array(s), a, r, np.array(s_)])
+        # print(transition)
+        self.memory.store(transition)
 
     # 选择行为
     def choose_action(self, observation):
@@ -174,7 +263,6 @@ class DeepQNetwork:
             action = np.argmax(actions_value)
         else:
             action = np.random.randint(0, self.n_actions)
-        # print("my action", action)
         return action
     
     # Random选择行为
@@ -196,37 +284,33 @@ class DeepQNetwork:
     def learn(self):
         # check to replace target parameters
         if self.learn_step_counter % self.replace_target_iter == 0:
-            t = self.sess.run(self.target_replace_op)
+            self.sess.run(self.target_replace_op)
             print('target_params_replaced\n')
             
         # sample batch memory from all memory
         
-        if self.memory_counter > self.memory_size:
-            sample_index = np.random.choice(self.memory_size, size=self.batch_size, replace=False)
-        else:
-            sample_index = np.random.choice(self.memory_counter, size=self.batch_size)
-        batch_memory = [self.memory[i] for i in sample_index]
+        tree_idx, batch_memory, ISWeights = self.memory.sample(self.batch_size)
         
-        # if self.learn_step_counter == 10 or self.learn_step_counter == 0 or self.learn_step_counter == 100 or self.learn_step_counter == 199 or self.learn_step_counter == 200 or self.learn_step_counter == 201:
-        # evalqq = self.sess.run(self.eval_weights, feed_dict={self.s: [row[0] for row in batch_memory]})
-        # print("evalqq",evalqq)
-        # tarqq = self.sess.run(self.tar_weights, feed_dict={self.s_: [row[0] for row in batch_memory]})
-        # print("tarqq",tarqq)
-        # q_eval = self.sess.run(self.q_eval, feed_dict={self.s: [row[0] for row in batch_memory]})
-        # print("q_eval",q_eval)
-        # input("stop")
+        # print("ISWeight ", ISWeights)
+        q_next, q_eval = self.sess.run(
+                [self.q_next, self.q_eval],
+                feed_dict={self.s_: [row[3] for row in batch_memory],
+                           self.s: [row[0] for row in batch_memory]})
+
+        q_target = q_eval.copy()
+        batch_index = np.arange(self.batch_size, dtype=np.int32)
+        eval_act_index = [row[1] for row in batch_memory]
+        reward = [row[2] for row in batch_memory]
+
+        q_target[batch_index, eval_act_index] = reward + self.gamma * np.max(q_next, axis=1)
         
-        _, cost = self.sess.run(
-                    [self._train_op, self.loss],
-                    feed_dict={
-                        self.s: [row[0] for row in batch_memory],
-                        self.a: [row[1] for row in batch_memory],
-                        self.r: [row[2] for row in batch_memory],
-                        self.s_: [row[3] for row in batch_memory],
-                    })
-        # print("cost: ",cost)
-        self.cost_his.append(cost)
-        # input("stop")
+        _, abs_errors, self.cost = self.sess.run([self._train_op, self.abs_errors, self.loss],
+                                        feed_dict={self.s: [row[0] for row in batch_memory],
+                                                self.q_target: q_target,
+                                                self.ISWeights: ISWeights})
+        self.memory.batch_update(tree_idx, abs_errors)     # update priority
+        self.cost_his.append(self.cost)
+        
         
         # increasing epsilon
         self.epsilon = self.epsilon + self.epsilon_increment if self.epsilon < self.epsilon_max else self.epsilon_max
@@ -250,15 +334,24 @@ class DeepQNetwork:
     def plot_age(self):
         plt.plot(np.arange(len(self.age_total_his)),
                  self.age_total_his)
-        # plt.plot(np.arange(len(self.random_age_total_his)),
-        #         self.random_age_total_his)
         plt.plot(np.arange(len(self.dbrs_age_total_his)),
                 self.dbrs_age_total_his)
         plt.plot(np.arange(len(self.sarlat_age_total_his)),
                  self.sarlat_age_total_his)
         plt.ylabel('Age')
         plt.xlabel('Steps')
-        plt.legend(labels=['DQN','DBRS','SAR-LAT'],loc='best')
+        plt.legend(labels=['DQN', 'DBRS','SAR-LAT'],loc='best')
+        plt.show()
+
+    def plot_total_age(self):
+        dqn_age = sum(self.age_total_his)/len(self.age_total_his)
+        dbrs_age = sum(self.dbrs_age_total_his)/len(self.dbrs_age_total_his)
+        sar_let_age = sum(self.sarlat_age_total_his)/len(self.sarlat_age_total_his)
+        plt.bar(np.arange(3), [dqn_age, dbrs_age, sar_let_age], color=['red', 'green', 'blue'])
+        plt.xticks(np.arange(3), ['DQN', 'DBRS','SAR-LAT'])
+        plt.xlabel('Policy')
+        plt.ylabel('Age')
+        plt.title('Average age for different policy')
         plt.show()
 
     # def plot_OR(self):
@@ -313,7 +406,9 @@ def run_maze():
             # input("Step !")
         print("episode: {}/1000".format(episode))
 
+
     # input("Testing")
+
     
     for e in range(1,10+1):
         print("Episode ", e)
@@ -403,7 +498,7 @@ if __name__ == '__main__':
     env = Env.twohop_relay(3,3,5)
     RL = DeepQNetwork(env.rly_num, env.n_actions, env.n_features,
                       learning_rate=0.001,
-                      reward_decay=1,
+                      reward_decay=1.0,
                       e_greedy=0.9,
                       replace_target_iter=5000,
                       memory_size=50000,
@@ -413,4 +508,5 @@ if __name__ == '__main__':
     env.mainloop()
     RL.plot_cost()
     RL.plot_age()
-    # RL.plot_OR()
+    RL.plot_reward()
+    RL.plot_total_age()
