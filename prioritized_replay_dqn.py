@@ -52,7 +52,7 @@ class SumTree(object):
           1     2
          / \   / \
         3   4 5   6    -> storing priority for transitions
-        Array type for storing:
+        Arraqy type for storing:
         [0,1,2,3,4,5,6]
         """
         parent_idx = 0
@@ -164,6 +164,7 @@ class DeepQNetwork:
         self.memory_size = memory_size
         self.batch_size = batch_size
         self.epsilon_increment = e_greedy_increment
+        self.AoI_max = 100
         self.epsilon = 0.01 if e_greedy_increment is not None else self.epsilon_max
 
         # total learning step
@@ -180,9 +181,9 @@ class DeepQNetwork:
 
         with tf.variable_scope('hard_replacement'):
             self.target_replace_op = [tf.assign(t, e) for t, e in zip(t_params, e_params)]
-        
-
-        self.sess = tf.Session()
+        config = tf.ConfigProto() 
+        config.gpu_options.allow_growth = True
+        self.sess = tf.Session(config=config)
 
         if output_graph:
             # $ tensorboard --logdir=logs
@@ -198,6 +199,8 @@ class DeepQNetwork:
         self.age_his = []
         # 紀錄下每步random的age
         self.random_age_his = []
+        # 紀錄下每步random的age
+        self.maxlink_age_his = []
         # 紀錄下每步用DBRS走的age
         self.dbrs_age_his = []
         # 紀錄下每步用SARLAT走的age
@@ -210,8 +213,12 @@ class DeepQNetwork:
         self.random_age_total_his = []
         # 紀錄下每個distence的平均 SARLAT age
         self.sarlat_age_total_his = []
+        # 紀錄下每個distence的平均 max-link age
+        self.maxlink_age_total_his = []
         # 紀錄下每個distence使用OR的次數
         self.OR_total_his = []
+        self.lost = []
+        self.lost_total = []
 
     def _build_net(self):
 
@@ -222,6 +229,7 @@ class DeepQNetwork:
                 e1 = tf.layers.flatten(e1)
                 out = tf.layers.dense(e1, self.n_actions, kernel_initializer=w_initializer,
                                                 bias_initializer=b_initializer, name='q', trainable = train)
+
                 return out
 
         # ------------------ build evaluate_net ------------------
@@ -245,6 +253,12 @@ class DeepQNetwork:
         self.s_ = tf.placeholder(tf.float32, [None, self.n_features, self.rly_num], name='s_')    # input
         with tf.variable_scope('target_net'):
             self.q_next = build_layers(self.s_,  n_l1, w_initializer, b_initializer, False)
+
+        with tf.variable_scope('choose_action'):
+            self.actions_value_ = tf.placeholder(tf.float32,[1,self.n_actions])
+            self.actions_value__ = tf.reshape(self.actions_value_, [-1])
+            #with tf.Session() as sess:
+            #    self.avalue = self.actions_value__.eval() 
         
     # 存储记忆
     def store_transition(self, s, a, r, s_):
@@ -254,16 +268,23 @@ class DeepQNetwork:
         self.memory.store(transition)
 
     # 选择行为
-    def choose_action(self, observation):
-        # to have batch dimension when feed into tf placeholder
-        observation = np.reshape(observation, (1,self.n_features,self.rly_num))
-        if np.random.uniform() < self.epsilon:
-            # forward feed the observation and get q value for every actions
-            actions_value = self.sess.run(self.q_eval, feed_dict={self.s: observation})
-            action = np.argmax(actions_value)
+    def choose_action(self, observation,avail_act):
+        if not avail_act:
+            return self.rly_num
         else:
-            action = np.random.randint(0, self.n_actions)
-        return action
+            # to have batch dimension when feed into tf placeholder
+            observation = np.reshape(observation, (1,self.n_features,self.rly_num))
+            if np.random.uniform() < self.epsilon:
+                # forward feed the observation and get q value for every actions
+                ac_value = self.sess.run(self.q_eval, feed_dict={self.s: observation})
+                a_value = self.sess.run(self.actions_value__, feed_dict={self.actions_value_: ac_value})
+                action = avail_act[np.argmax(a_value[avail_act])]
+                # actions_value = self.sess.run(self.q_eval, feed_dict={self.s: observation})
+                # action = np.argmax(actions_value)
+            else:
+                action = avail_act[np.random.randint(0, len(avail_act))]
+
+            return action
     
     # Random选择行为
     def random_choose(self):
@@ -273,11 +294,36 @@ class DeepQNetwork:
     # 选择行为
     def dqn_choose(self, observation):
         # to have batch dimension when feed into tf placeholder
+        #print("jfffjfjffkfk")
+        #print(observation)
         observation = np.reshape(observation, (1,self.n_features,self.rly_num))
         # forward feed the observation and get q value for every actions
         actions_value = self.sess.run(self.q_eval, feed_dict={self.s: observation})
         action = np.argmax(actions_value)
         return action
+
+    def test_choose_action(self,observation, avail_act):
+        #print("available action: ", avail_act)
+        if not avail_act:
+            return self.rly_num
+        else:
+            # to have batch dimension when feed into tf placeholder
+            observation = np.reshape(observation, (1,self.n_features,self.rly_num))
+            # forward feed the observation and get q value for every actions
+            ac_value = self.sess.run(self.q_eval, feed_dict={self.s: observation})
+            a_value = self.sess.run(self.actions_value__, feed_dict={self.actions_value_: ac_value})
+            # print("a value ", a_value)
+            # actions_value = tf.reshape(actions_value, [-1])
+            #with self.sess: 
+            #    a_value = a_value.eval() 
+            action = avail_act[np.argmax(a_value[avail_act])]
+            # for r in avail_act:
+            #     if actions_value[r]>a_value:
+            #         action = r
+            #         a_value = actions_value[r]
+            #     else:
+            #         pass
+            return action
     
 
     # 学习
@@ -285,13 +331,13 @@ class DeepQNetwork:
         # check to replace target parameters
         if self.learn_step_counter % self.replace_target_iter == 0:
             self.sess.run(self.target_replace_op)
-            print('target_params_replaced\n')
+            # print('target_params_replaced\n')
             
         # sample batch memory from all memory
         
         tree_idx, batch_memory, ISWeights = self.memory.sample(self.batch_size)
         
-        # print("ISWeight ", ISWeights)
+
         q_next, q_eval = self.sess.run(
                 [self.q_next, self.q_eval],
                 feed_dict={self.s_: [row[3] for row in batch_memory],
@@ -310,7 +356,8 @@ class DeepQNetwork:
                                                 self.ISWeights: ISWeights})
         self.memory.batch_update(tree_idx, abs_errors)     # update priority
         self.cost_his.append(self.cost)
-        
+        # with open("loss_ddqnper.txt",'a',encoding = 'utf-8') as f:
+        #     f.write(str(self.cost)+"\n")
         
         # increasing epsilon
         self.epsilon = self.epsilon + self.epsilon_increment if self.epsilon < self.epsilon_max else self.epsilon_max
@@ -318,18 +365,26 @@ class DeepQNetwork:
 
     # 查看学习效果
     def plot_cost(self):
-        plt.plot(np.arange(len(self.cost_his)),
-                 self.cost_his)
-        plt.ylabel('Cost')
-        plt.xlabel('training steps')
-        plt.show()
+        with open('loss_dqn_R3.txt', 'w') as fp:
+            for item in self.cost_his:
+            # write each item on a new line
+                fp.write("%f\n" % item)
+        #plt.plot(np.arange(len(self.cost_his)),
+                 #self.cost_his)
+        #plt.ylabel('Cost')
+        #plt.xlabel('training steps')
+        #plt.show()
     
     def plot_reward(self):
-        plt.plot(np.arange(len(self.reward_his)),
-                 self.reward_his)
-        plt.ylabel('Reward')
-        plt.xlabel('training steps')
-        plt.show()
+        with open('reward_R3.txt', 'w') as fp:
+            for item in self.reward_his:
+                # write each item on a new line
+                fp.write("%f\n" % item)
+        #plt.plot(np.arange(len(self.reward_his)),
+        #         self.reward_his)
+        #plt.ylabel('Reward')
+        #plt.xlabel('training steps')
+        #plt.show()
     
     def plot_age(self):
         plt.plot(np.arange(len(self.age_total_his)),
@@ -354,159 +409,373 @@ class DeepQNetwork:
         plt.title('Average age for different policy')
         plt.show()
 
-    # def plot_OR(self):
-    #     plt.plot(np.arange(len(self.OR_total_his)),
-    #              self.OR_total_his)
-    #     plt.ylabel('OR usage')
-    #     plt.xlabel('Distence')
-    #     plt.show()
+    def plot_OR(self):
+        plt.plot(np.arange(len(self.OR_total_his)),
+                 self.OR_total_his)
+        plt.ylabel('OR usage')
+        plt.xlabel('Distence')
+
+    def run_maze(self):
+        # # 控制到第几步学习
+        # # 进行300回合游戏
+        for episode in range(1,200+1):
+            # initial observation
+            # 初始化环境，相当于每回合重新开始
+            print("Episode ", episode)
+            if episode%40==0:
+                env.channel_refresh()
+            observation = env.reset()
+            # print("state ",env.returnstate())
+            step = 0
+            current_age = step
+            age = 0
+
+            for _ in range(500):
+                # fresh env
+                # 刷新环境
+                # env.render()
+                # RL choose action based on observation
+                # RL通过观察选择应该选择的动作
+                # print("state ",env.returnstate())
+                #print("observation ", observation)
+                #input("stop!")
+                #print("action " ,action)
+                # RL take action and get next observation and reward
+                # 环境根据动作，做出反应，主要给出state，reward
+                if env.IfArrive(step):
+                    # avai_action = env.availible_action(1)
+                    avai_action = [i for i in range(self.rly_num*2)]
+                    action = RL.choose_action(observation,avai_action)
+                    observation_, reward, Age= env.step(1,action, step, age,env.IfArrive(step+1))
+                    age = min(age+1,self.AoI_max)
+                    
+                else:
+                    # avai_action = env.availible_action(2)
+                    avai_action = [i for i in range(self.rly_num*2)]
+                    action = RL.choose_action(observation,avai_action)
+                    observation_, reward, Age= env.step(2,action, step, age,env.IfArrive(step+1))
+                    if Age != -1 and Age>=current_age:
+                        current_age = Age
+                        age = min((step+1)-Age,self.AoI_max)
+                    else:
+                      age = min(age+1,self.AoI_max)
+                    # reward = -1*age
+                #print("Reward ", reward, "Age ", Age, "current_age ", current_age, "age ", age)
+                env.update_current_age(current_age)
+                RL.reward_his.append(reward)
+                # DQN存储记忆，即（s,a,r,s）
+                RL.store_transition(observation, action, reward, observation_)
+                
+                # 当学习次数大于200，且是5的倍数时才让RL学习
+                if (step > 100) and (step % 5 == 0):
+                    RL.learn()
+
+            
+                # print("counter age ", age)
+                # swap observation
+                # 将下一个state作为本次的state
+                observation = observation_
+
+                # 学习的次数
+                step += 1
+                # input("Step !")
+            # print("episode: {}/1000".format(episode))
 
 
-def run_maze():
-    # 控制到第几步学习
-    step = 0
-    # 进行300回合游戏
-    for episode in range(1,1000+1):
-        # initial observation
-        # 初始化环境，相当于每回合重新开始
-        print("Reset.")
-        observation = env.reset()
+        # # input("Testing")
+
+        RL.lost_total.clear()
+        for e in range(1,20+1):
+            RL.age_his.clear()
+            RL.lost.clear()
+            if e%20==0:
+                env.channel_refresh()
+            observation = env.reset()
+            current_age = 0
+            age = 0
+            total_packet = 0
+            print(e, "Episodes")
+            recei_but_not_send = 0
         
-
-
-        for _ in range(10):
-            # fresh env
-            # 刷新环境
-            # env.render()
-            # RL choose action based on observation
-            # RL通过观察选择应该选择的动作
-            # input("stop!")
-            action = RL.choose_action(observation)
-            # print("state ",env.returnstate())
-            # RL take action and get next observation and reward
-            # 环境根据动作，做出反应，主要给出state，reward
-            observation_, reward, Age= env.step(action)
-            # print("action " ,action, "Reward ", reward, "Age ", Age)
-            
-            RL.reward_his.append(reward)
-
-            # DQN存储记忆，即（s,a,r,s）
-            RL.store_transition(observation, action, reward, observation_)
-            
-            # 当学习次数大于200，且是5的倍数时才让RL学习
-            if (step > 200) and (step % 5 == 0):
-                RL.learn()
-
-            # swap observation
-            # 将下一个state作为本次的state
-            observation = observation_
-
-            # 学习的次数
-            step += 1
-            # input("Step !")
-        print("episode: {}/1000".format(episode))
-
-
-    # input("Testing")
-
-    
-    for e in range(1,10+1):
-        print("Episode ", e)
-        RL.age_his.clear()
-        observation = env.reset()
         
-        # env.changedis(d)
-        for _ in range(2*pow(10,3)):
-            # input("pause")
-            # print("state ",env.returnstate())
-            action = RL.dqn_choose(observation)
-            # print("The action by DQN ", action)
-            action = env.choose(action)
-            # print("So, the action is ", action)
-            observation_, reward, Age= env.step(action)
+            # env.changedis(d)
+            for t in range(0, 3*pow(10,3), 1):
+                # input("pause")
+                # print("state ",env.returnstate())
+                # print("observation ", observation)
+                # print("The action by DQN ", action1)
+        
             
-            # print("The reward is " , reward, "The age is " , Age)
+                if env.IfArrive(t):
+                    # print("source send!")
+                    avai_action = env.availible_action(1)
+                    action = RL.test_choose_action(observation, avai_action)
+                    total_packet+=1
+                    # action = env.choose(1,action1)
+                    # print("So, the action is ", action)
+                    observation_, Age, lost= env.test(1,action, t,env.IfArrive(t+1))
+                
+                else:
+                    # print("source not send!")
+                    # action = env.choose(2,action1)
+                    # print("So, the action is ", action)
+                    avai_action = env.availible_action(2)
+                    action = RL.test_choose_action(observation, avai_action)
+                    if action/self.rly_num == 0:
+                        recei_but_not_send += 1
+                    observation_, Age, lost= env.test(2,action, t,env.IfArrive(t+1))
+                
+                # print("The age is " , Age)
             
-            RL.age_his.append(Age)
-            observation = observation_
+                if Age != -1 and Age>=current_age:
+                    age = min((t+1)-Age,self.AoI_max)
+                    RL.age_his.append(age)
+                    current_age = Age
+                
+                else:
+                    age = min(age+1,self.AoI_max)
+                    RL.age_his.append(age)
+                env.update_current_age(current_age)
+                RL.lost.append(lost)
+                # print("the counter age ", age, "current age ", current_age)
+                # print("lost ", lost)
+                observation = observation_
+        
+            print("receive but not send ", recei_but_not_send)
+            RL.age_total_his.append(sum(RL.age_his)/len(RL.age_his))
+            # print("Average age ", sum(RL.age_his)/len(RL.age_his))
+            # print("lost packet: ", sum(RL.lost), "total packet: ", total_packet)
+            RL.lost_total.append(sum(RL.lost)/total_packet)
+        print(RL.age_total_his)
+        print("DDQN-PER scheme")
+        print("Average: ", sum(RL.age_total_his)/len(RL.age_total_his))
+        print("standard ", np.std(RL.age_total_his))
+        # print(RL.lost_total)
+        print("Average: ", sum(RL.lost_total)/len(RL.lost_total))
 
-        RL.age_his = [i for i in RL.age_his if i != -1]
+        # input("DDQN-PER finish!")
 
-        RL.age_total_his.append(sum(RL.age_his)/len(RL.age_his))
-    print(RL.age_total_his)
-    print("Average: ", sum(RL.age_total_his)/len(RL.age_total_his))
-
-    for e in range(1,5+1):
-        print("Episode ", e)
-        RL.dbrs_age_his.clear()
-        observation = env.reset()
-        # env.changedis(d)
-        for _ in range(2*pow(10,3)):
-            # input("pause")
-            action = env.DBRS_OR()
-            # print("So, the action is ", action)
-            observation_, reward, Age= env.step(action)
-
-            # print("The age is " , Age)
-            RL.dbrs_age_his.append(Age)
-            observation = observation_
-        RL.dbrs_age_his = [i for i in RL.dbrs_age_his if i != -1]
-        RL.dbrs_age_total_his.append(sum(RL.dbrs_age_his)/len(RL.dbrs_age_his))
-    print(RL.dbrs_age_total_his)
-    print("Average: ", sum(RL.dbrs_age_total_his)/len(RL.dbrs_age_total_his))
-
-    # for d in range(1,5+1):
-    #     print("Distense ", d)
-    #     RL.random_age_his.clear()
-    #     observation = env.reset()
-    #     env.changedis(d)
-    #     for _ in range(2*pow(10,3)):
-    #         # input("pause")
-    #         # print("observation ", observation)
-    #         action = RL.random_choose()
-    #         # print("So, the action is ", action)
-    #         observation_, reward, Age= env.step(action)
-    #         RL.random_age_his.append(Age)
-    #         observation = observation_
-    #     RL.random_age_total_his.append(sum(RL.random_age_his)/len(RL.random_age_his))
-    # print(RL.random_age_total_his)
-
-    for e in range(1,5+1):
-        print("Episode ", e)
-        RL.sarlat_age_his.clear()
-        observation = env.reset()
-        # env.changedis(d)
-        for _ in range(2*pow(10,3)):
-            # input("pause")
-            # print("observation ", observation)
+        RL.lost_total.clear()
+        for e in range(1,20+1):
+            # print("Episode ", e)
+            RL.dbrs_age_his.clear()
+            if e%20==0:
+                env.channel_refresh()
+            observation = env.reset()
             # print("state ",env.returnstate())
-            action = env.SARLAT()
-            # print("So, the action is ", action)
-            observation_, reward, Age= env.step(action)
-            # print("The age is ", Age)
-            RL.sarlat_age_his.append(Age)
-            observation = observation_
-        RL.sarlat_age_his = [i for i in RL.sarlat_age_his if i != -1]
-        RL.sarlat_age_total_his.append(sum(RL.sarlat_age_his)/len(RL.sarlat_age_his))
-    print(RL.sarlat_age_total_his)
-    print("Average: ", sum(RL.sarlat_age_total_his)/len(RL.sarlat_age_total_his))
-    print('game over')
-    env.destroy()
+            RL.lost.clear()
+            current_age = -1
+            age = 0
+            total_packet = 0
+
+            for t in range(0, 4*pow(10,3), 2):
+                # input("pause")
+            
+                action = env.DBRS_OR()
+                # print("So, the action is ", action)
+                if env.IfArrive(t):
+                    # print("source send!")
+                    total_packet+=1
+                    observation_, Age, lost= env.test_two_phase(1,action, t)
+                else:
+                    # print("source not send!")
+                    observation_, Age, lost= env.test_two_phase(2,action, t)
+                # print("return age ", Age, "current_age ", current_age)
+                # print("state ",env.returnstate())
+
+            
+                if Age != -1 and Age>=current_age:
+                    RL.dbrs_age_his.append(age+1)
+                    age = min((t+2)-Age,self.AoI_max)
+                    RL.dbrs_age_his.append(age)
+                    current_age = Age
+                
+                else:
+                    RL.dbrs_age_his.append(age+1)
+                    age = min(age+2,self.AoI_max)
+                    RL.dbrs_age_his.append(age)
+                # print("The age is ", age)
+                RL.lost.append(lost)
+                # print("lost ", lost)
+                observation = observation_
+
+            RL.dbrs_age_total_his.append(sum(RL.dbrs_age_his)/len(RL.dbrs_age_his))
+            # print("Average age ", sum(RL.dbrs_age_his)/len(RL.dbrs_age_his))
+            # print("lost packet: ", sum(RL.lost), "total packet: ", total_packet)
+            RL.lost_total.append(sum(RL.lost)/total_packet)
+        # print(RL.dbrs_age_total_his)
+        print("DBRS scheme")
+        print("Average: ", sum(RL.dbrs_age_total_his)/len(RL.dbrs_age_total_his))
+        print("standard ", np.std(RL.dbrs_age_total_his))
+        # print(RL.lost_total)
+        print("Average: ", sum(RL.lost_total)/len(RL.lost_total))
+
+
+        RL.lost_total.clear()
+        for e in range(1,20+1):
+            # print("Episode ", e)
+            RL.sarlat_age_his.clear()
+            if e%20==0:
+                env.channel_refresh()
+            observation = env.reset()
+            RL.lost.clear()
+            # env.changedis(d)
+            current_age = -1
+            age = 0
+            total_packet=0
+            for t in range(0,4*pow(10,3),2):
+                # input("pause")
+                # print("state ",env.returnstate())
+            
+                action = env.SARLAT()
+                # print("So, the action is ", action)
+                if env.IfArrive(t):
+                    # print("source send!")
+                    total_packet+=1
+                    observation_, Age, lost= env.test_two_phase(1,action, t)
+                else:
+                    # print("source not send!")
+                    observation_, Age, lost= env.test_two_phase(2,action, t)
+            
+                if Age != -1 and Age>=current_age:
+                    RL.dbrs_age_his.append(age+1)
+                    age = min((t+2)-Age,self.AoI_max)
+                    RL.sarlat_age_his.append(age)
+                    current_age = Age
+                
+                else:
+                    RL.dbrs_age_his.append(age+1)
+                    age = min(age+2,self.AoI_max)
+                    RL.sarlat_age_his.append(age)
+                # print("The age is ", age)
+                RL.lost.append(lost)
+                observation = observation_
+
+            RL.sarlat_age_total_his.append(sum(RL.sarlat_age_his)/len(RL.sarlat_age_his))
+            # print("Average age ", sum(RL.sarlat_age_his)/len(RL.sarlat_age_his))
+            # print("lost packet: ", sum(RL.lost), "total packet: ", total_packet)
+            RL.lost_total.append(sum(RL.lost)/total_packet)
+        # print(RL.sarlat_age_total_his)
+        print("Greedy scheme")
+        print("Average: ", sum(RL.sarlat_age_total_his)/len(RL.sarlat_age_total_his))
+        # print(RL.lost_total)
+        print("standard ", np.std(RL.sarlat_age_total_his))
+        print("Average: ", sum(RL.lost_total)/len(RL.lost_total))
+
+        RL.lost_total.clear()
+        for e in range(1,20+1):
+            # print("Episode ", e)
+            RL.maxlink_age_his.clear()
+            RL.lost.clear()
+            if e%20==0:
+                env.channel_refresh()
+            observation = env.reset()
+            current_age = 0
+            age = 0
+            total_packet = 0
+            # env.changedis(d)
+            # input("pause")
+            for t in range(0, 2*pow(10,3), 1):
+            
+                # print("state ",env.returnstate())
+                [action,rly] = env.Maxlink()
+                # print("So, the action is ", action, "relay ", rly)
+                if env.IfArrive(t):
+                    # print("source send!")
+                    total_packet+=1
+                    observation_, Age, lost= env.test_maxlink(1,action, rly, t)
+                else:
+                    # print("source not send!")
+                    observation_, Age, lost= env.test_maxlink(2,action, rly, t)
+                if Age != -1 and Age>=current_age:
+                    age = min((t+1)-Age,self.AoI_max)
+                    RL.random_age_his.append(age)
+                    current_age = Age
+                
+                else:
+                    age = min(age+1,self.AoI_max)
+                    RL.maxlink_age_his.append(age)
+
+                # print("The age is ", age)
+                RL.lost.append(lost)
+                # print("current age ", current_age)
+                observation = observation_
+            RL.maxlink_age_total_his.append(sum(RL.maxlink_age_his)/len(RL.maxlink_age_his))
+            RL.lost_total.append(sum(RL.lost)/total_packet)
+            # print("lost packet: ", sum(RL.lost), "total packet: ", total_packet)
+            # print("Average age ", sum(RL.random_age_his)/len(RL.random_age_his))
+        # print(RL.random_age_total_his)
+        print("MaxLink scheme")
+        print("Average: ", sum(RL.maxlink_age_total_his)/len(RL.maxlink_age_total_his))
+        # print(RL.lost_total)
+        print("standard ", np.std(RL.maxlink_age_total_his))
+        print("Average: ", sum(RL.lost_total)/len(RL.lost_total))
+
+
+        # RL.lost_total.clear()
+        # for e in range(1,200+1):
+        #     # print("Episode ", e)
+        #     RL.random_age_his.clear()
+        #     RL.lost.clear()
+        #     if e%20==0:
+        #         env.channel_refresh()
+        #     observation = env.reset()
+        #     current_age = 0
+        #     age = 0
+        #     total_packet = 0
+        #     # env.changedis(d)
+        #     # input("pause")
+        #     for t in range(0,4*pow(10,3),2):
+            
+        #         # print("state ",env.returnstate())
+        #         action = RL.random_choose()
+        #         # print("So, the action is ", action)
+        #         if env.IfArrive(t):
+        #             # print("source send!")
+        #             total_packet+=1
+        #             observation_, Age, lost= env.test(1,action, t)
+        #         else:
+        #             # print("source not send!")
+        #             observation_, Age, lost= env.test(2,action, t)
+        #         if Age != -1 and Age>=current_age:
+        #             age = (t+2)-Age
+        #             RL.random_age_his.append(age)
+        #             current_age = Age
+                
+        #         else:
+        #             age+=2
+        #             RL.random_age_his.append(age)
+
+        #         # print("The age is ", age)
+        #         RL.lost.append(lost)
+        #         # print("current age ", current_age)
+        #         observation = observation_
+        #     RL.random_age_total_his.append(sum(RL.random_age_his)/len(RL.random_age_his))
+        #     RL.lost_total.append(sum(RL.lost)/total_packet)
+        #     # print("lost packet: ", sum(RL.lost), "total packet: ", total_packet)
+        #     # print("Average age ", sum(RL.random_age_his)/len(RL.random_age_his))
+        # # print(RL.random_age_total_his)
+        # print("Average: ", sum(RL.random_age_total_his)/len(RL.random_age_total_his))
+        # # print(RL.lost_total)
+        # print("standard ", np.std(RL.random_age_total_his))
+        # print("Average: ", sum(RL.lost_total)/len(RL.lost_total))
+        print('------------------game over-----------------')
 
 
 if __name__ == '__main__':
-    env = Env.twohop_relay(3,3,5)
+    env = Env.twohop_relay(3,1,30)
+    print("The relay number : ", 3)
     RL = DeepQNetwork(env.rly_num, env.n_actions, env.n_features,
                       learning_rate=0.001,
                       reward_decay=1.0,
                       e_greedy=0.9,
-                      replace_target_iter=5000,
-                      memory_size=50000,
+                      replace_target_iter=1000,
+                      memory_size=10000,
+                      batch_size=32,
+                      e_greedy_increment=0.001,
                       # output_graph=True
                       )
-    env.after(100, run_maze)
-    env.mainloop()
-    RL.plot_cost()
-    RL.plot_age()
-    RL.plot_reward()
-    RL.plot_total_age()
+    RL.run_maze()
+    #RL.plot_cost()
+    #RL.plot_age()
+    #RL.plot_reward()

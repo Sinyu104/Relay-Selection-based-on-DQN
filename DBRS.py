@@ -1,7 +1,6 @@
 from pickle import NONE
 import random
 
-from sqlalchemy import null
 
 RS = []
 TS = []
@@ -46,6 +45,7 @@ def setRCS(data_bf):
             RCS.append(rly)
         else:
             pass
+    # print("RCS: ", RCS)
 
 def setTCS(data_bf):
     TCS.clear()
@@ -59,6 +59,7 @@ def setTCS(data_bf):
             TCS.append(rly)
         else:
             pass
+    # print("TCS: ", TCS)
 
 def DBRSReceive(eng_bf, data_bf, datasize):
     greateng = eng_bf[RCS[0]]
@@ -74,7 +75,7 @@ def DBRSReceive(eng_bf, data_bf, datasize):
         else:
             pass
     
-
+    # print("Recep candicate: ", candicate)
     if len(candicate)==1:
         recep_rly = candicate[0]
     else:
@@ -82,11 +83,7 @@ def DBRSReceive(eng_bf, data_bf, datasize):
     
     recep = recep_rly
     
-    if(data_bf[recep_rly]==datasize-1):
-        return -1
-        
-    else:
-        return recep
+    return recep
 
 def DBRSTransmit(eng_bf, data_bf):
     candicate = []
@@ -101,6 +98,8 @@ def DBRSTransmit(eng_bf, data_bf):
             candicate.append(rly)
         else:
             pass
+    
+    # print("Trans candicate: ", candicate)
 
     if len(candicate)==1:
         trans_rly = candicate[0]
@@ -110,7 +109,7 @@ def DBRSTransmit(eng_bf, data_bf):
     
     trans = trans_rly
 
-    if(eng_bf[rly]<1 or data_bf[rly]<1):
+    if(eng_bf[rly]<1 or data_bf[rly]<1.0):
         return -1
     else:
         return trans
